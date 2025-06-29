@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, File, UploadFile
 from typing import List, Optional, Dict
 from app.core.aws import AWSClient
 from app.core.security import get_current_active_user
 from pydantic import BaseModel
 import boto3
 from botocore.exceptions import ClientError
-from app.schemas.aws import EC2Instance, S3Bucket, CloudWatchMetric
+from app.schemas.aws import EC2Instance, S3Bucket, CloudWatchMetric, EC2LaunchRequest, S3BucketCreateRequest, RDSCreateDatabaseRequest, S3AccessPolicyRequest, S3DeleteObjectRequest, EC2Image
 
 router = APIRouter()
 
@@ -116,19 +116,129 @@ async def get_cloudwatch_metrics(
 
 @router.post("/ec2/launch")
 async def launch_ec2_instance(
-    instance_type: str = Body(...),
-    ami_id: str = Body(...),
-    key_name: str = Body(...)
+    request: EC2LaunchRequest,
+    current_user = Depends(get_current_active_user),
+    aws_client: AWSClient = Depends(get_aws_client)
 ):
-    aws_client = AWSClient()
+    """Launch a new EC2 instance"""
     try:
-        response = aws_client.ec2.run_instances(
-            ImageId=ami_id,
-            InstanceType=instance_type,
-            KeyName=key_name,
-            MinCount=1,
-            MaxCount=1
+        response = await aws_client.launch_instance(
+            image_id=request.image_id,
+            instance_type=request.instance_type,
+            min_count=request.min_count,
+            max_count=request.max_count,
+            key_name=request.key_name
         )
-        return {"instance_id": response["Instances"][0]["InstanceId"]}
+        return {"message": "EC2 instance launched successfully", "instances": response}
+    except HTTPException as e:
+        raise e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=f"Error launching EC2 instance: {str(e)}")
+
+@router.post("/s3/create-bucket")
+async def create_s3_bucket(
+    request: S3BucketCreateRequest,
+    current_user = Depends(get_current_active_user),
+    aws_client: AWSClient = Depends(get_aws_client)
+):
+    """Create a new S3 bucket"""
+    try:
+        response = await aws_client.create_s3_bucket(
+            bucket_name=request.bucket_name,
+            region=request.region
+        )
+        return {"message": f"S3 bucket {request.bucket_name} created successfully", "response": response}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating S3 bucket: {str(e)}")
+
+@router.post("/rds/create-database")
+async def create_rds_database(
+    request: RDSCreateDatabaseRequest,
+    current_user = Depends(get_current_active_user),
+    aws_client: AWSClient = Depends(get_aws_client)
+):
+    """Create a new RDS database instance"""
+    try:
+        response = await aws_client.create_rds_database(
+            db_instance_identifier=request.db_instance_identifier,
+            db_instance_class=request.db_instance_class,
+            engine=request.engine,
+            master_username=request.master_username,
+            master_user_password=request.master_user_password,
+            allocated_storage=request.allocated_storage
+        )
+        return {"message": f"RDS database {request.db_instance_identifier} created successfully", "db_instance": response}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error creating RDS database: {str(e)}")
+
+@router.post("/s3/upload-file")
+async def upload_s3_file(
+    bucket_name: str = Body(..., embed=True),
+    object_name: str = Body(..., embed=True),
+    file: UploadFile = File(...),
+    current_user = Depends(get_current_active_user),
+    aws_client: AWSClient = Depends(get_aws_client)
+):
+    """Upload a file to an S3 bucket"""
+    try:
+        file_content = await file.read()
+        await aws_client.upload_file_to_s3(
+            bucket_name=bucket_name,
+            object_name=object_name,
+            file_content=file_content
+        )
+        return {"message": f"File '{object_name}' uploaded to bucket '{bucket_name}' successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error uploading file to S3: {str(e)}")
+
+@router.post("/s3/set-bucket-policy")
+async def set_s3_bucket_policy(
+    request: S3AccessPolicyRequest,
+    current_user = Depends(get_current_active_user),
+    aws_client: AWSClient = Depends(get_aws_client)
+):
+    """Set an S3 bucket policy"""
+    try:
+        await aws_client.put_bucket_policy(
+            bucket_name=request.bucket_name,
+            policy=request.policy
+        )
+        return {"message": f"Policy set for bucket '{request.bucket_name}' successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error setting S3 bucket policy: {str(e)}")
+
+@router.post("/s3/delete-object")
+async def delete_s3_object(
+    request: S3DeleteObjectRequest,
+    current_user = Depends(get_current_active_user),
+    aws_client: AWSClient = Depends(get_aws_client)
+):
+    """Delete an object from an S3 bucket"""
+    try:
+        await aws_client.delete_s3_object(
+            bucket_name=request.bucket_name,
+            object_name=request.object_name
+        )
+        return {"message": f"Object '{request.object_name}' deleted from bucket '{request.bucket_name}' successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error deleting S3 object: {str(e)}")
+
+@router.get("/ec2/images", response_model=List[EC2Image])
+async def get_ec2_images(
+    current_user = Depends(get_current_active_user),
+    aws_client: AWSClient = Depends(get_aws_client)
+):
+    """
+    Get all EC2 images from AWS
+    """
+    return await aws_client.get_ec2_images() 

@@ -73,11 +73,13 @@ class AWSClient:
             for reservation in response['Reservations']:
                 for instance in reservation['Instances']:
                     instances.append({
-                        'id': instance['InstanceId'],
-                        'type': instance['InstanceType'],
-                        'state': instance['State']['Name'],
-                        'launch_time': instance['LaunchTime'].isoformat(),
-                        'tags': instance.get('Tags', [])
+                        'InstanceId': instance['InstanceId'],
+                        'InstanceType': instance['InstanceType'],
+                        'State': instance['State'],
+                        'LaunchTime': instance['LaunchTime'].isoformat(),
+                        'Tags': instance.get('Tags', []),
+                        'PublicIpAddress': instance.get('PublicIpAddress'),
+                        'PrivateIpAddress': instance.get('PrivateIpAddress')
                     })
             return instances
         except ClientError as e:
@@ -171,5 +173,91 @@ class AWSClient:
                 params["KeyName"] = key_name
             response = self.ec2.run_instances(**params)
             return response['Instances']
+        except ClientError as e:
+            await self.handle_aws_error(e)
+
+    async def get_ec2_images(self) -> List[Dict]:
+        try:
+            # Fetch images owned by Amazon (public AMIs) and self (private/custom AMIs)
+            response = self.ec2.describe_images(
+                Owners=['amazon', 'self'],
+                Filters=[
+                    {'Name': 'state', 'Values': ['available']},
+                    {'Name': 'image-type', 'Values': ['machine']}
+                ]
+            )
+            images = []
+            for image in response['Images']:
+                images.append({
+                    'ImageId': image['ImageId'],
+                    'Name': image.get('Name', 'N/A'),
+                    'Description': image.get('Description', 'N/A'),
+                    'CreationDate': image['CreationDate'],
+                    'State': image['State'],
+                    'Architecture': image['Architecture'],
+                    'PlatformDetails': image.get('PlatformDetails', 'N/A'),
+                    'UsageOperation': image.get('UsageOperation', 'N/A'),
+                    'OwnerId': image['OwnerId'],
+                })
+            return images
+        except ClientError as e:
+            await self.handle_aws_error(e)
+
+    async def create_s3_bucket(self, bucket_name: str, region: Optional[str] = None):
+        try:
+            if region and region != 'us-east-1':
+                # For regions other than us-east-1, LocationConstraint is required
+                response = self.s3.create_bucket(
+                    Bucket=bucket_name,
+                    CreateBucketConfiguration={'LocationConstraint': region}
+                )
+            else:
+                response = self.s3.create_bucket(Bucket=bucket_name)
+            return response
+        except ClientError as e:
+            await self.handle_aws_error(e)
+
+    async def create_rds_database(self, db_instance_identifier: str, db_instance_class: str, engine: str, master_username: str, master_user_password: str, allocated_storage: int):
+        try:
+            response = self.rds.create_db_instance(
+                DBInstanceIdentifier=db_instance_identifier,
+                DBInstanceClass=db_instance_class,
+                Engine=engine,
+                MasterUsername=master_username,
+                MasterUserPassword=master_user_password,
+                AllocatedStorage=allocated_storage,
+            )
+            return response['DBInstance']
+        except ClientError as e:
+            await self.handle_aws_error(e)
+
+    async def upload_file_to_s3(self, bucket_name: str, object_name: str, file_content: bytes):
+        try:
+            response = self.s3.put_object(
+                Bucket=bucket_name,
+                Key=object_name,
+                Body=file_content
+            )
+            return response
+        except ClientError as e:
+            await self.handle_aws_error(e)
+
+    async def put_bucket_policy(self, bucket_name: str, policy: str):
+        try:
+            response = self.s3.put_bucket_policy(
+                Bucket=bucket_name,
+                Policy=policy
+            )
+            return response
+        except ClientError as e:
+            await self.handle_aws_error(e)
+
+    async def delete_s3_object(self, bucket_name: str, object_name: str):
+        try:
+            response = self.s3.delete_object(
+                Bucket=bucket_name,
+                Key=object_name
+            )
+            return response
         except ClientError as e:
             await self.handle_aws_error(e) 
